@@ -52,6 +52,7 @@ static Kit smallKit(const std::string& q, uint64_t seed, int per, std::vector<Ca
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered so CI logs show progress before any crash
     // ------------------------------------------------------------------
     section("analysis");
     {
@@ -181,7 +182,7 @@ int main() {
         bool hasMid = false, hasLoop = false, hasJson = false;
         for (auto& e : entries) { hasMid |= e.first.find(".mid") != std::string::npos; hasLoop |= e.first.find("Loops/") != std::string::npos; hasJson |= e.first.find("kit.json") != std::string::npos; }
         CHECK(hasMid && hasLoop && hasJson, "zip has midi/loop/json");
-        writeFile("/tmp/sdna_test_kit.zip", zip);
+        writeFile((std::filesystem::temp_directory_path() / "sdna_test_kit.zip").string(), zip);
 
         auto mid = patternToMidi(pat, 2);
         CHECK(mid.size() > 30 && std::string(mid.begin(), mid.begin() + 4) == "MThd", "midi header");
@@ -189,12 +190,12 @@ int main() {
         int expected = 0; for (auto& row : pat.vel) for (auto v : row) expected += v ? 1 : 0;
         CHECK(noteOns >= expected * 2 - 2, "midi note-ons %d (pattern %d x2 bars)", noteOns, expected);
 
-        std::string path = "/tmp/sdna_test.sdnakit", err;
+        std::string path = (std::filesystem::temp_directory_path() / "sdna_test.sdnakit").string(), err;
         CHECK(saveKitFile(k, &pat, path, &err), "save %s", err.c_str());
         Kit k2; PatternState p2;
         CHECK(loadKitFile(path, k2, &p2, &err), "load %s", err.c_str());
         CHECK(k2.samples.size() == k.samples.size() && k2.name == k.name && k2.dna.keyRoot == k.dna.keyRoot, "kit meta roundtrip");
-        bool audioSame = true; for (size_t i = 0; i < k.samples.size(); ++i) audioSame = audioSame && k2.samples[i]->audio.ch == k.samples[i]->audio.ch;
+        bool audioSame = k2.samples.size() == k.samples.size(); for (size_t i = 0; audioSame && i < k.samples.size(); ++i) audioSame = audioSame && k2.samples[i]->audio.ch == k.samples[i]->audio.ch;
         CHECK(audioSame, "kit audio lossless roundtrip");
         CHECK(p2.vel == pat.vel && p2.ch[3].sampleId == pat.ch[3].sampleId, "pattern roundtrip");
         CHECK(k2.profile.displayName == k.profile.displayName && std::abs(k2.profile[Desc::Hyper] - k.profile[Desc::Hyper]) < 1e-3, "profile roundtrip");
