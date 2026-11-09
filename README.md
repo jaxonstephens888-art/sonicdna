@@ -11,16 +11,23 @@ audition it, and exports to WAV / ZIP / MIDI / loops. Runs as a **standalone app
 
 ## Download and run (no coding needed)
 
-1. Open this repository on GitHub → **Actions** tab → latest **Build** run → scroll to **Artifacts**.
-2. Download `SONIC-DNA-macOS`, `SONIC-DNA-Windows` or `SONIC-DNA-Linux` and unzip it.
-3. **Standalone app:** open `SONIC DNA` (`SONIC DNA.exe` on Windows, `SONIC DNA.app` on macOS).
-   The builds are not code-signed: on macOS right-click → *Open* the first time; on Windows click
-   *More info → Run anyway*.
+1. Open this repository on GitHub → **Actions** tab → latest green **Build** run → **Artifacts**.
+2. **macOS:** download `SONIC-DNA-macOS`, unzip it and open `SONIC-DNA-macOS.dmg`. Drag
+   `SONIC DNA.app` to Applications. The first time you open it macOS will block it, because the
+   build is not notarised by Apple: click OK, then go to **System Settings → Privacy & Security**,
+   scroll down and click **Open Anyway**. (Terminal alternative:
+   `xattr -dr com.apple.quarantine "/Applications/SONIC DNA.app"`.) Universal build: Apple Silicon and
+   Intel, macOS 11+.
+3. **Windows:** download `SONIC-DNA-Windows`, unzip, run `SONIC DNA.exe` (SmartScreen: *More info →
+   Run anyway*).
 4. **Plugin:** copy `SONIC DNA.vst3` into your VST3 folder, then rescan plugins in your DAW:
    * Windows: `C:\Program Files\Common Files\VST3`
    * macOS: `~/Library/Audio/Plug-Ins/VST3` (Logic Pro: copy `SONIC DNA.component` to `~/Library/Audio/Plug-Ins/Components`)
    * Linux: `~/.vst3`
-5. Type an artist, press **GENERATE**, audition in the Library, play the Drum Machine, export.
+5. Type an artist and/or drop in reference tracks, press **GENERATE**, audition, play the Drum Machine, export.
+
+Each download also contains an `INSTALL-*.txt` with these steps. Removing the macOS warning entirely
+requires signing with an Apple Developer ID and notarising (paid Apple Developer Program membership).
 
 ## Learn from reference audio ("listen to the artist")
 

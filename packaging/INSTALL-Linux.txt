@@ -1,0 +1,3 @@
+SONIC DNA — Linux install
+
+Run ./"SONIC DNA" for the standalone app. Copy "SONIC DNA.vst3" to ~/.vst3 for the plugin.

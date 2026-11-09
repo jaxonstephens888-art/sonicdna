@@ -1,0 +1,19 @@
+SONIC DNA — macOS install
+=========================
+
+1. Drag "SONIC DNA.app" into your Applications folder.
+   Plugins (optional):
+     - Ableton / FL Studio / most DAWs: copy "SONIC DNA.vst3" to  ~/Library/Audio/Plug-Ins/VST3
+     - Logic Pro / GarageBand:          copy "SONIC DNA.component" to ~/Library/Audio/Plug-Ins/Components
+
+2. First launch. This build is not notarised by Apple (that needs a paid Apple
+   Developer account), so macOS blocks it once:
+     - Open SONIC DNA. When macOS says it can't be opened, click Done/OK.
+     - Open System Settings > Privacy & Security, scroll down, click "Open Anyway"
+       next to the SONIC DNA message, and confirm.
+
+   Or, in Terminal (one command, does the app and both plugins):
+     xattr -dr com.apple.quarantine "/Applications/SONIC DNA.app" ~/Library/Audio/Plug-Ins/VST3/"SONIC DNA.vst3" ~/Library/Audio/Plug-Ins/Components/"SONIC DNA.component"
+
+3. Plugins: after the step above, rescan plugins in your DAW. Logic: restart Logic;
+   it validates the Audio Unit automatically.

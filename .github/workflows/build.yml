@@ -34,7 +34,11 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSDNA_BUILD_HOST_TEST=OFF
+        run: |
+          EXTRA=""
+          # macOS: Universal binary (Apple Silicon + Intel), runs on macOS 11+
+          if [ "$RUNNER_OS" = "macOS" ]; then EXTRA='-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSDNA_BUILD_HOST_TEST=OFF $EXTRA
 
       - name: Build
         shell: bash
@@ -61,9 +65,52 @@ jobs:
           done
           rm -f dist/*.pdb dist/*.lib dist/*.exp
           cp README.md dist/
+          cp packaging/INSTALL-${{ runner.os }}.txt dist/ 2>/dev/null || true
           ls -la dist
+
+      # GitHub artifact zips drop file permissions, which makes macOS report the app as "damaged".
+      # So: sign (ad-hoc) and ship macOS inside a .dmg, Linux inside a .tar.gz, which both keep permissions.
+      - name: Sign and build disk image (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -ex
+          cd dist
+          for b in "SONIC DNA.app" "SONIC DNA.vst3" "SONIC DNA.component"; do
+            if [ -e "$b" ]; then
+              xattr -cr "$b"
+              codesign --force --deep --sign - --timestamp=none "$b"
+              codesign --verify --deep --strict --verbose=2 "$b"
+            fi
+          done
+          lipo -info "SONIC DNA.app/Contents/MacOS/SONIC DNA"
+          chmod +x sonicdna "SONIC DNA.app/Contents/MacOS/SONIC DNA"
+          cd ..
+          hdiutil create -volname "SONIC DNA" -srcfolder dist -ov -format UDZO SONIC-DNA-macOS.dmg
+          # Verify the image: mount it and check the app is intact, executable and validly signed.
+          MNT=$(mktemp -d)
+          hdiutil attach SONIC-DNA-macOS.dmg -nobrowse -readonly -mountpoint "$MNT"
+          test -x "$MNT/SONIC DNA.app/Contents/MacOS/SONIC DNA"
+          codesign --verify --deep --strict "$MNT/SONIC DNA.app"
+          "$MNT/sonicdna" analyze "Burial" | head -3
+          hdiutil detach "$MNT"
+          mkdir -p upload && mv SONIC-DNA-macOS.dmg upload/
+
+      - name: Archive (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p upload
+          tar -czf upload/SONIC-DNA-Linux.tar.gz -C dist .
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p upload
+          cp -R dist/. upload/
 
       - uses: actions/upload-artifact@v4
         with:
           name: SONIC-DNA-${{ matrix.name }}
-          path: dist
+          path: upload

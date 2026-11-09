@@ -1,0 +1,9 @@
+SONIC DNA — Windows install
+===========================
+
+1. Standalone: run "SONIC DNA.exe". If Windows SmartScreen says "Windows protected
+   your PC", click "More info" then "Run anyway" (the app is not code-signed).
+
+2. Plugin: copy the "SONIC DNA.vst3" folder to
+     C:\Program Files\Common Files\VST3
+   then rescan plugins in your DAW.
