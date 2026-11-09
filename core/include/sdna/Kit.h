@@ -4,6 +4,7 @@
 #include "sdna/Dsp.h"
 #include "sdna/Profile.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -40,6 +41,18 @@ std::vector<Category> categoriesInGroup(Group g);
 // Kit-wide shared character. Derived once from the profile so every sample in
 // a kit shares tuning, space, saturation flavour and degradation — this is what
 // makes a generated kit feel like *one* record rather than random sounds.
+// Targets measured from the user's reference audio (see AudioAnalysis.h).
+struct ReferenceTargets {
+    bool valid = false;
+    float weight = 0.0f;            // how strongly engines follow the targets
+    float kickHz = 0, kickDecay = 0, kickDrop = 0;
+    float snareHz = 0, snareDecay = 0, snareBright = 0;
+    float hatDecay = 0, hatBright = 0;
+    float bandwidthHz = 0;          // >0 = reference is band-limited (lo-fi); kit follows
+    bool hasGrid = false;
+    std::array<std::array<float, 16>, 3> grid{}; // kick / snare / hat step probabilities
+};
+
 struct KitDNA {
     uint64_t seed = 1;
     int keyRoot = 9;            // pitch class
@@ -62,6 +75,7 @@ struct KitDNA {
     float fmBias = 0.0f;        // 0 harmonic .. 1 inharmonic
     int kickNote = 33;          // MIDI note of kick / 808 fundamental
     std::vector<int> progression; // scale degrees for chordal material
+    ReferenceTargets ref;
 
     int noteInKey(int degree, int octave) const; // MIDI note of scale degree (can be negative/over 7)
 };

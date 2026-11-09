@@ -15,6 +15,7 @@
 
 | Component | Technique | Network? |
 |---|---|---|
+| Reference-audio analysis | **DSP / music-information retrieval**: STFT, band-wise spectral flux, autocorrelation tempo with octave correction, beat/downbeat alignment, 16-step groove grids, swing from onset offsets, chroma + Krumhansl/diatonic key estimation with bass tie-break, per-bar chord templates, harmonic/percussive median filtering, per-hit kick/snare/hat measurement (median spectra, background-corrected decay), long-term spectrum, dynamics and stereo width (`core/src/AudioAnalysis.cpp`) | No |
 | Offline artist/genre analysis | Hand-curated knowledge base (89 artists, 43 genres) + fuzzy matching, blending ("X meets Y"), descriptor parsing, seeded fallback | No |
 | Online artist research | **AI**: Claude (`claude-opus-5-5`) Messages API + server-side `web_search` tool, returns a JSON sonic profile | **Yes** + API key |
 | Prompt direction ("darker, more lo-fi") | Rule-based NL parser (intensifiers, negation, 300+ keywords) | No |

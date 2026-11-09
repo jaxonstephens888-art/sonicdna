@@ -38,8 +38,24 @@ ProfilePanel::ProfilePanel(SonicDNAProcessor& p) : proc(p) {
         auto m = x.m;
         infl.push_back({ x.name, makeSlider([this, m](float v) { proc.influence.*m = v; content.repaint(); }, x.tip) });
     }
+    refWeight = makeSlider([this](float v) { proc.setReferenceWeight(v); }, "How much the measured reference audio overrides the artist/genre knowledge");
+    content.addAndMakeVisible(addRef); content.addAndMakeVisible(clearRef);
+    addRef.setTooltip("Add reference tracks you own (WAV, AIFF, FLAC, MP3). They are measured locally; nothing is copied or uploaded. You can also drop files anywhere on the window.");
+    clearRef.setTooltip("Forget all reference audio");
+    addRef.onClick = [this] {
+        chooser = std::make_unique<juce::FileChooser>("Add reference audio", juce::File::getSpecialLocation(juce::File::userMusicDirectory), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg;*.m4a");
+        chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
+                             [this](const juce::FileChooser& fc) { if (!fc.getResults().isEmpty()) proc.addReferenceFiles(fc.getResults()); });
+    };
+    clearRef.onClick = [this] { proc.clearReferences(); };
     proc.addListener(this);
+    startTimerHz(10);
     refresh();
+}
+
+void ProfilePanel::timerCallback() {
+    bool l = proc.isListening();
+    if (l || l != wasListening) { wasListening = l; content.repaint(); }
 }
 
 ProfilePanel::~ProfilePanel() { proc.removeListener(this); }
@@ -48,6 +64,9 @@ void ProfilePanel::refresh() {
     for (int i = 0; i < kNumDesc; ++i) desc[(size_t)i].slider->setValue(proc.profile.d[(size_t)i], juce::dontSendNotification);
     const float* iv[] = { &proc.influence.drums, &proc.influence.tonal, &proc.influence.texture, &proc.influence.processing, &proc.influence.groove, &proc.influence.variation };
     for (size_t i = 0; i < infl.size(); ++i) infl[i].slider->setValue(*iv[i], juce::dontSendNotification);
+    refWeight->setValue(proc.referenceWeight, juce::dontSendNotification);
+    clearRef.setVisible(!proc.references.empty());
+    refWeight->setVisible(!proc.references.empty());
     resized();
     content.repaint();
 }
@@ -72,6 +91,18 @@ int ProfilePanel::Content::layoutHeight(int width) {
     metaY = y; y += 20;
     promptY = y; y += owner.proc.prompt.isNotEmpty() ? 22 : 0;
     y += 14;
+    refY = y;
+    {
+        auto& refs = owner.proc.references;
+        y += 26;
+        if (refs.empty() && !owner.proc.isListening()) y += 46;
+        else {
+            y += (int)refs.size() * 18 + (owner.proc.isListening() ? 18 : 0);
+            auto comb = owner.proc.combinedReference();
+            if (comb.valid) y += 4 + (int)describeReference(comb).size() * 16 + 6 + kRowH;
+        }
+        y += 14;
+    }
     descY = y; y += 22 + kNumDesc * kRowH;
     y += 14;
     infY = y; y += 22 + (int)owner.infl.size() * kRowH;
@@ -82,6 +113,13 @@ int ProfilePanel::Content::layoutHeight(int width) {
 
 void ProfilePanel::Content::resized() {
     int labelW = 92, valueW = 30;
+    owner.addRef.setBounds(getWidth() - kPad - 64, refY, 64, 20);
+    owner.clearRef.setBounds(getWidth() - kPad - 64 - 6 - 54, refY, 54, 20);
+    {
+        auto comb = owner.proc.combinedReference();
+        int wy = refY + 26 + (int)owner.proc.references.size() * 18 + (owner.proc.isListening() ? 18 : 0) + 4 + (int)describeReference(comb).size() * 16 + 6;
+        owner.refWeight->setBounds(kPad + labelW, wy + 3, getWidth() - 2 * kPad - labelW - valueW, kRowH - 6);
+    }
     for (int i = 0; i < (int)owner.desc.size(); ++i)
         owner.desc[(size_t)i].slider->setBounds(kPad + labelW, descY + 22 + i * kRowH + 3, getWidth() - 2 * kPad - labelW - valueW, kRowH - 6);
     for (int i = 0; i < (int)owner.infl.size(); ++i)
@@ -157,6 +195,53 @@ void ProfilePanel::Content::paint(juce::Graphics& g) {
         g.setFont(mono(10.5f, 500));
         g.drawFittedText(s.toUpperCase(), kPad, promptY, W - 2 * kPad, 18, juce::Justification::centredLeft, 1, 0.7f);
     }
+    // Reference audio
+    {
+        int top = refY;
+        g.setColour(col::line); g.drawHorizontalLine(top - 6, (float)kPad, (float)(W - kPad));
+        drawSectionLabel(g, "Reference audio", { kPad, top + 3, 160, 14 });
+        int ry = top + 26;
+        removeRects.clear();
+        auto& refs = proc.references;
+        if (refs.empty() && !proc.isListening()) {
+            auto box = juce::Rectangle<int>(kPad, ry, W - 2 * kPad, 40);
+            g.setColour(col::lineHi);
+            juce::Path dash; dash.addRoundedRectangle(box.toFloat().reduced(0.5f), 4.0f);
+            float d[] = { 4.0f, 3.0f }; juce::PathStrokeType(1.0f).createDashedStroke(dash, dash, d, 2);
+            g.fillPath(dash);
+            g.setColour(col::faint); g.setFont(sans(11.5f));
+            g.drawFittedText(U8("Drop tracks you own here — SONIC DNA listens and learns tempo, key, chords, groove and drum sound."), box.reduced(10, 2), juce::Justification::centred, 2);
+        } else {
+            for (size_t i = 0; i < refs.size(); ++i) {
+                g.setColour(col::accent); g.fillEllipse((float)kPad, (float)ry + 7.0f, 4.0f, 4.0f);
+                g.setColour(col::text); g.setFont(sans(12.0f, 500));
+                g.drawFittedText(juce::String::fromUTF8(refs[i].name.c_str()), kPad + 12, ry, W - 2 * kPad - 120, 18, juce::Justification::centredLeft, 1, 0.8f);
+                g.setColour(col::faint); g.setFont(mono(10.5f));
+                g.drawText(juce::String((int)std::round(refs[i].bpm)) + " BPM  " + noteName(std::max(0, refs[i].keyRoot)), W - kPad - 100, ry, 82, 18, juce::Justification::centredRight);
+                auto x = juce::Rectangle<int>(W - kPad - 14, ry + 2, 14, 14);
+                g.setColour(col::dim); g.drawLine((float)x.getX() + 3, (float)x.getY() + 3, (float)x.getRight() - 3, (float)x.getBottom() - 3, 1.2f);
+                g.drawLine((float)x.getRight() - 3, (float)x.getY() + 3, (float)x.getX() + 3, (float)x.getBottom() - 3, 1.2f);
+                removeRects.push_back(x);
+                ry += 18;
+            }
+            if (proc.isListening()) {
+                g.setColour(col::accent); g.setFont(mono(10.5f, 500));
+                g.drawText(U8("LISTENING… ") + juce::String((int)(proc.listeningProgress() * 100)) + "%", kPad, ry, W - 2 * kPad, 18, juce::Justification::centredLeft);
+                ry += 18;
+            }
+            auto comb = proc.combinedReference();
+            if (comb.valid) {
+                ry += 4;
+                g.setFont(mono(10.5f)); g.setColour(col::dim);
+                for (auto& line : describeReference(comb)) { g.drawFittedText(juce::String::fromUTF8(line.c_str()), kPad, ry, W - 2 * kPad, 16, juce::Justification::centredLeft, 1, 0.75f); ry += 16; }
+                ry += 6;
+                g.setColour(col::dim); g.setFont(sans(12.0f));
+                g.drawText("Audio vs artist", kPad, ry, 92, kRowH, juce::Justification::centredLeft);
+                g.setColour(col::text); g.setFont(mono(10.5f));
+                g.drawText(juce::String((int)std::round(proc.referenceWeight * 100)) + "%", W - kPad - 30, ry, 30, kRowH, juce::Justification::centredRight);
+            }
+        }
+    }
     // Descriptors
     auto rows = [&](int top, const juce::String& title, std::vector<Row>& v, bool percent) {
         g.setColour(col::line); g.drawHorizontalLine(top - 6, (float)kPad, (float)(W - kPad));
@@ -182,6 +267,11 @@ void ProfilePanel::Content::paint(juce::Graphics& g) {
         g.drawFittedText(juce::String::fromUTF8(s.c_str()), kPad + 12, sy, W - 2 * kPad - 12, 18, juce::Justification::centredLeft, 1, 0.8f);
         sy += 18;
     }
+}
+
+void ProfilePanel::Content::mouseDown(const juce::MouseEvent& e) {
+    for (size_t i = 0; i < removeRects.size(); ++i)
+        if (removeRects[i].expanded(3).contains(e.getPosition())) { owner.proc.removeReference((int)i); return; }
 }
 
 } // namespace ui

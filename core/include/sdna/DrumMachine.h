@@ -152,7 +152,8 @@ std::array<Category, kChannels> defaultChannelRoles();
 void assignKitToChannels(const Kit& kit, PatternState& st);
 
 // Groove-aware pattern randomiser.
-void randomizePattern(PatternState& st, const SonicProfile& p, Groove g, uint64_t seed, float density, float humanize);
+void randomizePattern(PatternState& st, const SonicProfile& p, Groove g, uint64_t seed, float density, float humanize,
+                      const ReferenceTargets* ref = nullptr); // ref grid (if any) is blended into the groove template
 Groove pickGroove(const SonicProfile& p, uint64_t seed);
 
 // Standard MIDI File (type 0) for the pattern; pad n -> note kBaseMidiNote + n.

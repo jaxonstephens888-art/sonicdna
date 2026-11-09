@@ -22,6 +22,33 @@ audition it, and exports to WAV / ZIP / MIDI / loops. Runs as a **standalone app
    * Linux: `~/.vst3`
 5. Type an artist, press **GENERATE**, audition in the Library, play the Drum Machine, export.
 
+## Learn from reference audio ("listen to the artist")
+
+Drop tracks you own (WAV, AIFF, FLAC, MP3, OGG; M4A/AAC on macOS & Windows) onto the window, or
+press **+ AUDIO** in the Sonic Profile panel. SONIC DNA analyses them **on your computer** and uses
+the measurements to build the kit:
+
+| Measured from your audio | Used for |
+|---|---|
+| Tempo (incl. half/double-time), swing | Kit tempo, tempo-synced loops/arps/fills, drum-machine swing |
+| Key, scale, chord progression (one chord per bar) | Every tonal sound is in that key; keys/pads/strings/arps/vocals follow the progression; 808s & toms are tuned to it |
+| Kick / snare / hat pattern per 16th step | The drum machine's pattern and RANDOMISE follow your groove |
+| Kick pitch, pitch sweep & decay; snare body, decay & brightness; hat decay & brightness | Synthesised drums are tuned/shaped toward them |
+| Brightness, sub weight, compression/clipping, loudness, stereo width, density/space, top-end roll-off, noise floor | The 14 character sliders (Dark, Heavy, Distorted, Lo-fi, Atmospheric …) and the kit's processing |
+
+**Audio vs artist** sets how much the audio overrides the artist/genre knowledge (tempo and key always
+come from the audio when it is present). The analysis is saved with the kit and your DAW session.
+
+What it does **not** do: it never copies, samples or uploads your audio — kits stay 100% synthesised.
+It cannot fetch songs from Spotify/YouTube (those services don't allow it); you provide the files.
+Measurements are DSP heuristics: tempo, key, chords and groove are reliable on clear material
+(tested on synthetic references with known answers, including a half-time trap track with a bass line
+under an 808); drum-timbre numbers are approximate on dense full mixes — stems or drum loops give
+the best results. Not yet validated on a large set of real commercial songs.
+
+CLI: `./build/sonicdna generate "Metro Boomin" --ref mytrack.wav,other.wav --ref-weight 0.7 --zip kit.zip`
+(the CLI reads WAV only; the plugin reads all formats above). Use `-` as the name to build from audio alone.
+
 ## Status — what works today
 
 | Feature | Status |

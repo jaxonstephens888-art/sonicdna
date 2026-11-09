@@ -5,6 +5,7 @@
 //                     [--seed N] [--out DIR] [--zip FILE] [--kit FILE.sdnakit] [--categories kick,snare]
 //   sonicdna list
 #include "sdna/ArtistDatabase.h"
+#include "sdna/AudioAnalysis.h"
 #include "sdna/KitGenerator.h"
 #include "sdna/KitIO.h"
 
@@ -24,6 +25,7 @@ static void usage() {
               "  sonicdna analyze \"<artist|genre>\" [--prompt \"...\"]\n"
               "  sonicdna generate \"<artist|genre>\" [--prompt \"...\"] [--per N] [--sr 44100|48000] [--bits 16|24|32]\n"
               "                    [--seed N] [--variation 0..1] [--out DIR] [--zip FILE.zip] [--kit FILE.sdnakit] [--categories a,b]\n"
+              "                    [--ref track1.wav,track2.wav] [--ref-weight 0..1]   (learn from your own reference audio)\n"
               "  sonicdna list");
 }
 
@@ -54,6 +56,27 @@ int main(int argc, char** argv) {
 
     AnalysisResult ar = analyseQuery(query);
     SonicProfile prof = ar.profile;
+    // Reference audio: measured locally, never copied into the kit.
+    std::vector<ReferenceFeatures> refs;
+    ReferenceFeatures combined;
+    float refWeight = std::stof(get("--ref-weight", "0.7"));
+    {
+        std::string list = get("--ref", ""); std::stringstream ss(list); std::string path;
+        while (std::getline(ss, path, ',')) {
+            if (path.empty()) continue;
+            std::vector<uint8_t> bytes; Buffer audio; std::string err;
+            if (!readFile(path, bytes) || !decodeWav(bytes, audio, nullptr, &err)) { std::fprintf(stderr, "cannot read reference %s %s (WAV only in the CLI)\n", path.c_str(), err.c_str()); continue; }
+            auto f = analyseReference(audio, fs::path(path).filename().string());
+            std::printf("  Reference %s (%.0fs)\n", f.name.c_str(), f.seconds);
+            for (auto& line : describeReference(f)) std::printf("      %s\n", line.c_str());
+            refs.push_back(f);
+        }
+        if (!refs.empty()) {
+            combined = combineReferences(refs);
+            if (query == "-") prof = profileFromReference(combined, nullptr, 1.0f);
+            else prof = profileFromReference(combined, &prof, refWeight);
+        }
+    }
     std::string prompt = get("--prompt", "");
     PromptResult pr = applyPrompt(prof, prompt);
     std::printf("SONIC DNA · %s\n  %s\n", query.c_str(), ar.message.c_str());
@@ -77,6 +100,7 @@ int main(int argc, char** argv) {
         while (std::getline(ss, c, ',')) { Category cc; if (categoryFromId(c, cc)) go.categories.push_back(cc); else std::fprintf(stderr, "unknown category '%s'\n", c.c_str()); }
     }
     Influence inf; inf.variation = std::stof(get("--variation", "0.5"));
+    if (combined.valid) { go.reference = &combined; go.referenceWeight = refWeight; }
     int lastPct = -1;
     go.progress = [&](int done, int total, const std::string&) {
         int pct = done * 100 / total;
@@ -95,7 +119,7 @@ int main(int argc, char** argv) {
     auto roles = defaultChannelRoles();
     for (int c = 0; c < kChannels; ++c) pat.ch[(size_t)c].role = roles[(size_t)c];
     assignKitToChannels(kit, pat);
-    randomizePattern(pat, kit.profile, pickGroove(kit.profile, kit.seed), kit.seed, 0.5f, kit.influence.variation);
+    randomizePattern(pat, kit.profile, pickGroove(kit.profile, kit.seed), kit.seed, 0.5f, kit.influence.variation, &kit.dna.ref);
     pat.ch[6].choke = pat.ch[5].choke = pat.ch[7].choke = 1;
     std::array<PlaybackPtr, kChannels> pads{};
     for (int c = 0; c < kChannels; ++c) if (auto s = kit.find(pat.ch[(size_t)c].sampleId)) pads[(size_t)c] = makePlayback(*s);

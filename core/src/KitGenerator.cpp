@@ -71,6 +71,11 @@ void finishSample(Buffer& b, Category c, const KitDNA& dna, bool isLoop, uint64_
     if (dna.crushMix > 0.0f) fx::bitcrush(b, dna.crushBits, dna.crushDownsample, dna.crushMix * crushScale[(int)g]);
     if (dna.tapeWow > 0.05f && g != Group::Drums && g != Group::Cymbals && !isLoop) fx::tapeWow(b, dna.tapeWow * 0.6f, 0.55f, seed ^ 0x7A9E);
     if ((g == Group::Drums || g == Group::Cymbals) && std::abs(dna.transientDb) > 0.5f) fx::transient(b, dna.transientDb, 0.0f);
+    // Follow a band-limited (lo-fi) reference's top end.
+    if (dna.ref.valid && dna.ref.bandwidthHz > 1000.0f) {
+        double hz = dna.ref.bandwidthHz * 1.05 + (1.0 - dna.ref.weight) * 4000.0;
+        if (hz < b.sampleRate * 0.45) fx::lowpass(b, hz, 0.6);
+    }
     int cap = (int)(maxSeconds(c) * b.sampleRate);
     if (b.length() > cap) { b.resize(cap); fx::fadeOut(b, 0.05); }
     if (!isLoop) {
@@ -126,6 +131,7 @@ Kit KitGenerator::generate(const SonicProfile& profile, const Influence& influen
     // Groove influence & tonal influence affect tempo and key choice.
     SonicProfile grooveP = effectiveProfile(profile, influence, Domain::Tonal);
     kit.dna = deriveDNA(grooveP, kit.seed);
+    if (opts.reference && opts.reference->valid) applyReferenceToDNA(kit.dna, *opts.reference, opts.referenceWeight);
 
     std::vector<Category> cats = opts.categories;
     if (cats.empty()) for (int i = 0; i < kNumCategories; ++i) cats.push_back((Category)i);

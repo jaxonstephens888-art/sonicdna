@@ -185,11 +185,12 @@ void SonicDNAEditor::paint(juce::Graphics& g) {
     br.removeFromRight(8);
     badge(br.removeFromRight(170).withSizeKeepingCentre(170, 20), U8("SYNTHESIS · OFFLINE"), col::text);
     // progress
-    if (proc.isGenerating() || proc.isAnalysing()) {
+    if (proc.isGenerating() || proc.isAnalysing() || proc.isListening()) {
         auto pr = juce::Rectangle<float>(0, (float)kHeaderH - 2, (float)getWidth(), 2.0f);
         g.setColour(col::panel2); g.fillRect(pr);
         g.setColour(col::accent);
         if (proc.isGenerating()) g.fillRect(pr.withWidth(pr.getWidth() * proc.generationProgress()));
+        else if (proc.isListening()) g.fillRect(pr.withWidth(pr.getWidth() * proc.listeningProgress()));
         else { float t = (float)(juce::Time::getMillisecondCounter() % 1400) / 1400.0f; g.fillRect(pr.withX(pr.getWidth() * t - 120).withWidth(240)); }
     }
     // Tab bar
@@ -283,7 +284,7 @@ void SonicDNAEditor::kitChanged() {
 }
 
 void SonicDNAEditor::timerCallback() {
-    if (proc.isGenerating() || proc.isAnalysing()) {
+    if (proc.isGenerating() || proc.isAnalysing() || proc.isListening()) {
         repaint(0, kHeaderH - 2, getWidth(), 2);
         repaint(getLocalBounds().removeFromBottom(kFooterH));
     }
@@ -310,6 +311,30 @@ void SonicDNAEditor::textEditorReturnKeyPressed(juce::TextEditor& e) {
 void SonicDNAEditor::textEditorEscapeKeyPressed(juce::TextEditor&) { suggest.setVisible(false); }
 void SonicDNAEditor::textEditorFocusLost(juce::TextEditor& e) {
     if (&e == &artist) juce::Timer::callAfterDelay(200, [sp = juce::Component::SafePointer<SonicDNAEditor>(this)] { if (sp) sp->suggest.setVisible(false); });
+}
+
+bool SonicDNAEditor::isInterestedInFileDrag(const juce::StringArray& files) {
+    for (auto& f : files) if (SonicDNAProcessor::isSupportedAudioFile(juce::File(f))) return true;
+    return false;
+}
+
+void SonicDNAEditor::filesDropped(const juce::StringArray& files, int, int) {
+    fileDragActive = false;
+    juce::Array<juce::File> list;
+    for (auto& f : files) if (SonicDNAProcessor::isSupportedAudioFile(juce::File(f))) list.add(juce::File(f));
+    proc.addReferenceFiles(list);
+    repaint();
+}
+
+void SonicDNAEditor::paintOverChildren(juce::Graphics& g) {
+    if (!fileDragActive) return;
+    auto r = getLocalBounds().reduced(12).toFloat();
+    g.setColour(col::bg.withAlpha(0.82f)); g.fillRect(getLocalBounds());
+    g.setColour(col::accent); g.drawRoundedRectangle(r, 8.0f, 2.0f);
+    g.setFont(sans(22.0f, 600)); g.setColour(col::text);
+    g.drawText("Drop to use as reference audio", r.withTrimmedBottom(40), juce::Justification::centred);
+    g.setFont(sans(14.0f)); g.setColour(col::dim);
+    g.drawText(U8("Analysed on this computer — tempo, key, chords, groove, drum sound and tone. Nothing is copied or uploaded."), r.withTrimmedTop(40), juce::Justification::centred);
 }
 
 bool SonicDNAEditor::keyPressed(const juce::KeyPress& k) {
@@ -361,9 +386,15 @@ void SonicDNAEditor::runAutotestStep() {
     auto query = juce::SystemStats::getEnvironmentVariable("SONICDNA_AUTOTEST_QUERY", "The Hellp");
     switch (autotestStep) {
         case 0: snap("01_empty"); artist.grabKeyboardFocus(); artist.setText(query.substring(0, 4), true); autotestWait = 5; break;
-        case 1: snap("02_suggestions"); artist.setText(query, false); prompt.setText("make it darker and more industrial", true); suggest.setVisible(false);
-                lastAnalysed = query; proc.analyse(query, false); autotestWait = 5; break;
-        case 2: snap("03_analysed"); log("analysis: " + proc.analysisMessage + " | source=" + juce::String(proc.profile.source)); onGenerate(); autotestWait = 2; break;
+        case 1: { snap("02_suggestions"); artist.setText(query, false); prompt.setText("make it darker and more industrial", true); suggest.setVisible(false);
+                lastAnalysed = query; proc.analyse(query, false);
+                auto ref = juce::SystemStats::getEnvironmentVariable("SONICDNA_AUTOTEST_REF", {});
+                if (ref.isNotEmpty()) { juce::Array<juce::File> fl; fl.add(juce::File(ref)); proc.addReferenceFiles(fl); fileDragActive = true; repaint(); }
+                autotestWait = 5; break; }
+        case 2: if (fileDragActive) { snap("02b_drop_overlay"); fileDragActive = false; repaint(); }
+                if (proc.isListening()) return;
+                if (!proc.references.empty()) log("reference: " + juce::String(describeReference(proc.references[0])[0]) + " | profile source=" + juce::String(proc.profile.source));
+                snap("03_analysed"); log("analysis: " + proc.analysisMessage + " | source=" + juce::String(proc.profile.source)); onGenerate(); autotestWait = 2; break;
         case 3: if (proc.isGenerating()) { snap("04_generating"); autotestWait = 0; return; } break; // wait until done
         case 4: if (!proc.kit) return; log("kit: " + juce::String((int)proc.kit->samples.size()) + " samples | " + proc.status);
                 library.select(Category::Snare); autotestWait = 4; break;

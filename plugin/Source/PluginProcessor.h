@@ -9,6 +9,7 @@
 
 #include <JuceHeader.h>
 #include "sdna/ArtistDatabase.h"
+#include "sdna/AudioAnalysis.h"
 #include "sdna/DrumMachine.h"
 #include "sdna/KitGenerator.h"
 #include "sdna/KitIO.h"
@@ -52,7 +53,21 @@ public:
     void removeListener(Listener* l) { listeners.remove(l); }
 
     juce::String query, prompt;
-    sdna::SonicProfile profile;      // analysed (and user-edited) profile, before the prompt
+    sdna::SonicProfile profile;      // effective profile (artist + reference audio + user edits), before the prompt
+    sdna::SonicProfile artistProfile; // from the artist/genre analysis alone
+
+    // ---- reference audio ("listen to the artist") ---------------------------
+    // Files the user owns are decoded and MEASURED locally; audio is never copied into kits or uploaded.
+    std::vector<sdna::ReferenceFeatures> references;
+    float referenceWeight = 0.7f;    // 0 = ignore audio, 1 = audio decides everything it can measure
+    void addReferenceFiles(const juce::Array<juce::File>& files);
+    void removeReference(int index);
+    void clearReferences();
+    void setReferenceWeight(float w);
+    bool isListening() const { return refJobs.load() > 0; }
+    float listeningProgress() const { return refProgress.load(); }
+    sdna::ReferenceFeatures combinedReference() const { return sdna::combineReferences(references); }
+    static bool isSupportedAudioFile(const juce::File& f);
     sdna::Influence influence;
     juce::String analysisMessage;
     std::shared_ptr<sdna::Kit> kit;  // current kit (may be null)
@@ -105,7 +120,11 @@ private:
 
     juce::ListenerList<Listener> listeners;
     sdna::KitGenerator generator;
+    void rebuildProfile();
     juce::ThreadPool pool{ 2 };
+    juce::AudioFormatManager formats;
+    std::atomic<int> refJobs{ 0 };
+    std::atomic<float> refProgress{ 0 };
     services::OnlineAnalyser analyser;
     std::atomic<bool> generating{ false }, cancelFlag{ false };
     std::atomic<float> genProgress{ 0 };

@@ -8,6 +8,7 @@
 
 class SonicDNAEditor : public juce::AudioProcessorEditor,
                        public juce::DragAndDropContainer,
+                       public juce::FileDragAndDropTarget,
                        private SonicDNAProcessor::Listener,
                        private juce::TextEditor::Listener,
                        private juce::Timer {
@@ -17,6 +18,11 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress&) override;
+    void paintOverChildren(juce::Graphics&) override;
+    bool isInterestedInFileDrag(const juce::StringArray& files) override;
+    void fileDragEnter(const juce::StringArray&, int, int) override { fileDragActive = true; repaint(); }
+    void fileDragExit(const juce::StringArray&) override { fileDragActive = false; repaint(); }
+    void filesDropped(const juce::StringArray& files, int, int) override;
 
 protected:
     bool shouldDropFilesWhenDraggedExternally(const juce::DragAndDropTarget::SourceDetails&, juce::StringArray& files, bool& canMoveFiles) override;
@@ -61,6 +67,7 @@ private:
     ui::DrumMachineView drums;
     int tab = 0;
     bool pendingGenerate = false;
+    bool fileDragActive = false;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::String lastAnalysed;
     // Automated end-to-end UI test (SONICDNA_AUTOTEST=<output dir>)

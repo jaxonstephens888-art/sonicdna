@@ -1,6 +1,7 @@
 // Core test-suite: analysis, prompt parsing, generation quality checks,
 // determinism, file formats, sequencer timing and real-time safety.
 #include "sdna/ArtistDatabase.h"
+#include "sdna/AudioAnalysis.h"
 #include "sdna/KitGenerator.h"
 #include "sdna/KitIO.h"
 #include "sdna/OnlineAnalysis.h"
@@ -34,14 +35,70 @@ static double estimatePitch(const Buffer& b, double fromSec, double lenSec) {
     if (s0 + n > b.length()) n = b.length() - s0;
     const float* x = b.data(0) + s0;
     int minLag = (int)(b.sampleRate / 1000), maxLag = (int)(b.sampleRate / 25);
-    double best = -1; int bestLag = 0;
+    double best = -1; int bestLag = 0; bool dipped = false;
     for (int lag = minLag; lag < maxLag && lag < n / 2; ++lag) {
-        double acc = 0, e = 0;
-        for (int i = 0; i + lag < n; ++i) { acc += x[i] * x[i + lag]; e += x[i] * x[i]; }
-        double v = acc / (e + 1e-9);
-        if (v > best) { best = v; bestLag = lag; }
+        double acc = 0, e1 = 0, e2 = 0;
+        for (int i = 0; i + lag < n; ++i) { acc += x[i] * x[i + lag]; e1 += x[i] * x[i]; e2 += x[i + lag] * x[i + lag]; }
+        double v = acc / (std::sqrt(e1 * e2) + 1e-9); // normalised over the overlap (unbiased for long lags)
+        if (v < 0) dipped = true;                      // only consider peaks after the first dip below zero
+        if (dipped && v > best) { best = v; bestLag = lag; }
     }
     return bestLag ? b.sampleRate / bestLag : 0;
+}
+
+
+// ---- synthetic "reference track" with known ground truth -------------------
+static PlaybackPtr pbFrom(std::vector<float> L, double sr) { auto p = std::make_shared<PlaybackSample>(); p->sampleRate = sr; p->L = L; p->R = std::move(L); return p; }
+struct RefSpec { double bpm = 97; float swing = 0; double kickHz = 55, kickT60 = 0.45; std::vector<int> kicks{ 0, 6, 10 }, snares{ 4, 12 };
+                 bool sixteenthHats = true; std::vector<std::array<int, 3>> chords{ { 50, 53, 57 }, { 46, 50, 53 }, { 43, 46, 50 }, { 45, 48, 52 } }; int bars = 8; };
+static Buffer makeReference(double bpm, float swing, double kickHz, double sr = 44100);
+static Buffer makeReferenceSpec(const RefSpec& r, double sr = 44100);
+static Buffer makeReference(double bpm, float swing, double kickHz, double sr) { RefSpec r; r.bpm = bpm; r.swing = swing; r.kickHz = kickHz; return makeReferenceSpec(r, sr); }
+static Buffer makeReferenceSpec(const RefSpec& spec, double sr) {
+    double bpm = spec.bpm, kickHz = spec.kickHz; float swing = spec.swing;
+    // drums
+    std::vector<float> kick((size_t)(0.6 * sr)), snare((size_t)(0.4 * sr)), hat((size_t)(0.08 * sr));
+    double ph = 0; Rng rr(5);
+    kick.resize((size_t)((spec.kickT60 + 0.15) * sr));
+    for (size_t i = 0; i < kick.size(); ++i) { double t = i / sr; double f = kickHz * (1 + 3 * std::exp(-t / 0.02)); ph += f / sr; kick[i] = (float)(0.9 * std::sin(kTwoPi * ph) * std::exp(-6.9 * t / spec.kickT60)); }
+    SVF hp; hp.set(sr, 7000, 0.7);
+    for (size_t i = 0; i < snare.size(); ++i) { double t = i / sr; snare[i] = (float)(0.5 * std::sin(kTwoPi * 200 * t) * std::exp(-6.9 * t / 0.12) + 0.45 * rr.bipolar() * std::exp(-6.9 * t / 0.2)); }
+    for (size_t i = 0; i < hat.size(); ++i) { double t = i / sr; hat[i] = hp.hp(rr.bipolar()) * (float)std::exp(-6.9 * t / 0.05) * 0.5f; }
+    PatternState st; auto roles = defaultChannelRoles(); for (int c = 0; c < kChannels; ++c) st.ch[(size_t)c].role = roles[(size_t)c];
+    for (int s : spec.kicks) st.vel[0][(size_t)s] = 120;
+    for (int s : spec.snares) st.vel[2][(size_t)s] = 115;
+    for (int s = 0; s < 16; s += spec.sixteenthHats ? 1 : 2) st.vel[5][(size_t)s] = s % 2 ? 70 : 95; // 16th hats so swing is audible
+    st.bpm = (float)bpm; st.swing = swing; st.masterDb = -6;
+    std::array<PlaybackPtr, kChannels> pads{}; pads[0] = pbFrom(kick, sr); pads[2] = pbFrom(snare, sr); pads[5] = pbFrom(hat, sr);
+    const int bars = spec.bars;
+    Buffer mix = DrumMachine::renderLoop(st, pads, bars, sr, false);
+    // chords (default: D minor i - VI - iv - v), one per bar, with a bass line on the roots
+    const auto& chords = spec.chords;
+    double barSec = 240.0 / bpm;
+    for (int b = 0; b < bars; ++b) for (int n = 0; n < 3; ++n) {
+        double f = midiToHz(chords[(size_t)b % chords.size()][(size_t)n] + 12);
+        int s0 = (int)(b * barSec * sr), len = (int)(barSec * sr);
+        for (int i = 0; i < len && s0 + i < mix.length(); ++i) {
+            double t = i / sr; float env = (float)std::min(1.0, t / 0.05) * (float)std::min(1.0, (barSec - t) / 0.05);
+            float v = (float)(0.06 * (std::sin(kTwoPi * f * t) + 0.5 * std::sin(kTwoPi * 2 * f * t) + 0.25 * std::sin(kTwoPi * 3 * f * t))) * env;
+            if (n == 0) { double fb = midiToHz(chords[(size_t)b % chords.size()][0] - 12); v += (float)(0.12 * std::sin(kTwoPi * fb * t)) * env; }
+            mix.ch[0][(size_t)(s0 + i)] += v; mix.ch[1][(size_t)(s0 + i)] += v;
+        }
+    }
+    fx::normalize(mix, -1);
+    return mix;
+}
+
+// Strongest partial between 28 and 160 Hz in [from, from+len) seconds (how a kick's pitch is perceived/measured).
+static double lowPeakHz(const Buffer& b, double from, double len) {
+    const int N = 16384;
+    std::vector<float> re(N, 0.0f), im(N, 0.0f);
+    int s0 = (int)(from * b.sampleRate), n = std::min((int)(len * b.sampleRate), std::min(N, b.length() - s0));
+    for (int i = 0; i < n; ++i) re[(size_t)i] = b.ch[0][(size_t)(s0 + i)] * (0.5f - 0.5f * (float)std::cos(kTwoPi * i / (n - 1)));
+    fft(re, im, false);
+    double hz = b.sampleRate / N; int best = 0; float bv = 0;
+    for (int k = (int)(28 / hz); k <= (int)(160 / hz); ++k) { float m = re[(size_t)k] * re[(size_t)k] + im[(size_t)k] * im[(size_t)k]; if (m > bv) { bv = m; best = k; } }
+    return best * hz;
 }
 
 static Kit smallKit(const std::string& q, uint64_t seed, int per, std::vector<Category> cats = {}, const std::string& prompt = "") {
@@ -225,6 +282,76 @@ int main() {
         CHECK(refusal.status == online::Status::Error, "refusal handled");
         auto noJson = online::interpretResponse("x", R"({"stop_reason":"end_turn","content":[{"type":"text","text":"I could not find it."}]})", 200);
         CHECK(noJson.status == online::Status::Error, "no json handled");
+    }
+    section("reference audio analysis");
+    {
+        Buffer ref = makeReference(97, 0.0f, 55.0);
+        auto f = analyseReference(ref, "synthetic");
+        for (auto& line : describeReference(f)) std::printf("    %s\n", line.c_str());
+        for (int b = 0; b < 3; ++b) { std::printf("    grid %d: ", b); for (int q = 0; q < 16; ++q) std::printf("%.1f ", f.grid[(size_t)b][(size_t)q]); std::printf("\n"); }
+        CHECK(f.valid, "valid");
+        CHECK(std::abs(f.bpm - 97.0f) < 1.5f, "tempo %.1f", f.bpm);
+        CHECK(f.keyRoot == 2 && f.scale != Scale::Major && f.scale != Scale::Lydian, "key %s %s", noteName(f.keyRoot), scaleName(f.scale));
+        CHECK(f.progression == std::vector<int>({ 0, 5, 3, 4 }), "progression %zu", f.progression.size());
+        CHECK(std::abs(f.kick.pitchHz - 55.0f) < 6.0f, "kick pitch %.1f", f.kick.pitchHz);
+        CHECK(f.kick.decaySec > 0.25f && f.kick.decaySec < 0.8f, "kick decay %.2f (true T60 0.45)", f.kick.decaySec);
+        bool kickGrid = true; for (int s = 0; s < 16; ++s) { bool on = s == 0 || s == 6 || s == 10; kickGrid = kickGrid && (on ? f.grid[0][(size_t)s] > 0.7f : f.grid[0][(size_t)s] < 0.3f); }
+        CHECK(kickGrid, "kick groove grid");
+        CHECK(f.grid[1][4] > 0.7f && f.grid[1][12] > 0.7f && f.grid[1][8] < 0.3f, "snare groove grid %.2f %.2f %.2f", f.grid[1][4], f.grid[1][12], f.grid[1][8]);
+        CHECK(f.swing < 0.15f, "straight swing %.2f", f.swing);
+
+        // Harder case: half-time trap at 140 with a bass line under a long 48 Hz 808-style kick.
+        RefSpec trap; trap.bpm = 140; trap.kickHz = 48; trap.kickT60 = 0.8; trap.kicks = { 0, 7, 10 }; trap.snares = { 8 }; trap.sixteenthHats = false; trap.bars = 12;
+        trap.chords = { { 54, 57, 61 }, { 50, 54, 57 }, { 52, 56, 59 }, { 49, 52, 56 } }; // F#m D E C#m
+        auto ft = analyseReference(makeReferenceSpec(trap), "trap");
+        for (auto& line : describeReference(ft)) std::printf("    trap: %s\n", line.c_str());
+        for (int b = 0; b < 3; ++b) { std::printf("    trap grid %d: ", b); for (int q = 0; q < 16; ++q) std::printf("%.1f ", ft.grid[(size_t)b][(size_t)q]); std::printf("\n"); }
+        CHECK(std::abs(ft.bpm - 140.0f) < 1.5f, "trap tempo %.1f (expected 140, not half-time 70)", ft.bpm);
+        CHECK(ft.keyRoot == 6 && ft.scale != Scale::Major && ft.scale != Scale::Lydian, "trap key %s %s (expected F# minor)", noteName(ft.keyRoot), scaleName(ft.scale));
+        CHECK(std::abs(ft.kick.pitchHz - 48.0f) < 7.0f, "trap kick %.1f Hz under a bass line (expected 48)", ft.kick.pitchHz);
+        CHECK(ft.grid[1][8] > 0.7f && ft.grid[1][4] < 0.3f && ft.grid[1][7] < 0.3f && ft.grid[0][0] > 0.7f && ft.grid[0][7] > 0.7f, "trap groove (snare on 3 only, kick 1 & 8)");
+        SonicProfile tp = profileFromReference(ft, nullptr, 1.0f);
+        CHECK(!tp.grooves.empty() && tp.grooves[0] == Groove::Trap, "trap groove style recognised (%s)", tp.grooves.empty() ? "-" : grooveLabel(tp.grooves[0]));
+
+        auto fs = analyseReference(makeReference(97, 0.6f, 55.0), "swung");
+        CHECK(fs.swing > 0.4f && fs.swing < 0.85f, "swing measured %.2f (set 0.60)", fs.swing);
+
+        Buffer dark = ref; fx::lowpass(dark, 2500, 0.7); fx::lowpass(dark, 2500, 0.7);
+        auto fd = analyseReference(dark, "dark");
+        CHECK(fd.centroidHz < f.centroidHz && fd.bandwidthHz < f.bandwidthHz - 1500.0f, "band-limited: centroid %.0f<%.0f, top %.0f<%.0f Hz", fd.centroidHz, f.centroidHz, fd.bandwidthHz, f.bandwidthHz);
+        Buffer bright = ref; fx::tilt(bright, 1.0f); fx::tilt(bright, 1.0f); fx::tilt(bright, 1.0f); fx::normalize(bright, -1);
+        auto fb = analyseReference(bright, "bright");
+        SonicProfile pRef = profileFromReference(f, nullptr, 1.0f), pDark = profileFromReference(fd, nullptr, 1.0f), pBrt = profileFromReference(fb, nullptr, 1.0f);
+        SonicProfile& pBright = pRef;
+        CHECK(pBrt[Desc::Dark] < pRef[Desc::Dark] && pDark[Desc::Lofi] > pRef[Desc::Lofi], "profile follows audio (dark %.2f<%.2f, lofi %.2f>%.2f)", pBrt[Desc::Dark], pRef[Desc::Dark], pDark[Desc::Lofi], pRef[Desc::Lofi]);
+        CHECK(pBright.bpm == 97 && pBright.keyRoot == 2, "profile takes measured tempo/key");
+
+        auto rt = featuresFromJson(featuresToJson(f));
+        bool gridSame = true; for (int b = 0; b < 3; ++b) for (int q = 0; q < 16; ++q) gridSame = gridSame && std::abs(rt.grid[(size_t)b][(size_t)q] - f.grid[(size_t)b][(size_t)q]) < 1e-3f;
+        CHECK(rt.valid && std::abs(rt.bpm - f.bpm) < 1e-3f && rt.keyRoot == f.keyRoot && gridSame && std::abs(rt.kick.pitchHz - f.kick.pitchHz) < 0.01f, "features json roundtrip");
+        auto comb = combineReferences({ f, fs });
+        CHECK(comb.valid && std::abs(comb.bpm - 97) < 1.5f, "combine");
+
+        // Kit generated from the reference follows it.
+        GenerateOptions o; o.perCategory = 4; o.seed = 11; o.reference = &f; o.referenceWeight = 1.0f;
+        o.categories = { Category::Kick, Category::Bass808, Category::Keys };
+        SonicProfile base = analyseQuery("techno").profile;
+        Kit k = KitGenerator().generate(profileFromReference(f, &base, 1.0f), Influence{}, o, "ref", "");
+        CHECK(k.dna.bpm == 97 && k.dna.keyRoot == 2 && k.dna.progression == std::vector<int>({ 0, 5, 3, 4 }) && k.dna.ref.hasGrid, "kit DNA from reference");
+        int tuned = 0, total = 0;
+        for (auto& smp : k.inCategory(Category::Kick)) {
+            double est = lowPeakHz(smp->audio, 0.05, 0.3); ++total;
+            double cents = 1200 * std::log2(est / 55.0);
+            if (std::abs(cents) < 260 || std::abs(cents - 1200) < 260 || std::abs(cents + 1200) < 260) ++tuned; // estimator octave errors allowed
+            std::printf("    kick %-22s %.1f Hz  len %.2fs peak %.2f rms(0.06-0.18) %.4f\n", smp->name.c_str(), est, smp->audio.seconds(), fx::peak(smp->audio), [&]{ double a=0; int n=0; for (int i=(int)(0.06*smp->audio.sampleRate); i<(int)(0.18*smp->audio.sampleRate) && i<smp->audio.length(); ++i){ a+=smp->audio.ch[0][(size_t)i]*smp->audio.ch[0][(size_t)i]; ++n;} return n? std::sqrt(a/n):0.0; }());
+        }
+        CHECK(tuned >= total - 1, "kicks tuned to reference (%d/%d)", tuned, total);
+        PatternState pat; for (int c = 0; c < kChannels; ++c) pat.ch[(size_t)c].role = defaultChannelRoles()[(size_t)c];
+        randomizePattern(pat, k.profile, Groove::FourFloor, 3, 0.5f, 0.0f, &k.dna.ref);
+        CHECK(pat.vel[0][6] > 0 && pat.vel[0][10] > 0 && pat.vel[2][4] > 0 && pat.vel[2][12] > 0, "drum machine pattern follows reference groove");
+        PatternState p2; Kit kk = k; std::string path = (std::filesystem::temp_directory_path() / "sdna_ref.sdnakit").string(), err;
+        saveKitFile(k, nullptr, path, &err); Kit back; loadKitFile(path, back, &p2, &err);
+        CHECK(back.dna.ref.valid && back.dna.ref.hasGrid && std::abs(back.dna.ref.kickHz - k.dna.ref.kickHz) < 0.01f, "reference targets saved in kit");
     }
     // ------------------------------------------------------------------
     section("drum machine");

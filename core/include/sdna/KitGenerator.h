@@ -1,6 +1,7 @@
 // SONIC DNA — kit generation orchestration.
 #pragma once
 
+#include "sdna/AudioAnalysis.h"
 #include "sdna/Engine.h"
 
 #include <atomic>
@@ -14,6 +15,8 @@ struct GenerateOptions {
     uint64_t seed = 0;              // 0 = pick a fresh random seed
     std::vector<Category> categories; // empty = all categories
     int threads = 0;                // 0 = hardware concurrency - 1
+    const ReferenceFeatures* reference = nullptr; // measured reference audio (optional)
+    float referenceWeight = 0.7f;
     // progress(done, total, label) — return false to cancel. Called from worker threads.
     std::function<bool(int, int, const std::string&)> progress;
 };

@@ -18,6 +18,8 @@ SonicDNAProcessor::SonicDNAProcessor()
     auto roles = defaultChannelRoles();
     for (int c = 0; c < kChannels; ++c) machine.params[c].role = (int)roles[(size_t)c];
     profile = neutralProfile();
+    artistProfile = profile;
+    formats.registerBasicFormats(); // WAV, AIFF, FLAC, Ogg, MP3 (+ platform codecs such as AAC/M4A on macOS & Windows)
     influence = Influence{};
     gc.dm = &machine;
     gc.startTimer(1000);
@@ -100,18 +102,18 @@ void SonicDNAProcessor::analyse(const juce::String& q, bool online) {
     }
     // Offline analysis is instant and always runs first so the UI is never empty.
     auto r = analyseQuery(query.toStdString());
-    profile = r.profile;
+    artistProfile = r.profile;
     analysisMessage = r.message;
-    listeners.call([](Listener& l) { l.profileChanged(); });
+    rebuildProfile();
     if (!online) { setStatus(r.message); return; }
     setStatus("Researching \"" + query + U8("\" online… (requires internet)"));
     auto token = alive;
     analyser.start(query, [this, token](bool ok, SonicProfile p, juce::String msg) {
         if (!token->load()) return;
         if (ok) {
-            profile = p;
+            artistProfile = p;
             analysisMessage = msg;
-            listeners.call([](Listener& l) { l.profileChanged(); });
+            rebuildProfile();
             setStatus(msg + U8(" Profile updated — press Generate."));
         } else {
             setStatus("Online analysis failed: " + msg + " Kept the offline profile.", true);
@@ -148,9 +150,12 @@ void SonicDNAProcessor::generate() {
     opts.sampleRate = services::Settings::get().sampleRate();
     std::string name = p.displayName.empty() ? query.toStdString() : p.displayName;
     std::string pr_ = prompt.toStdString();
+    auto ref = std::make_shared<ReferenceFeatures>(combineReferences(references));
+    float refW = referenceWeight;
     setStatus("Generating " + juce::String(opts.perCategory * kNumCategories) + U8(" samples…"));
     auto token = alive;
-    pool.addJob([this, token, p, inf, opts, name, pr_]() mutable {
+    pool.addJob([this, token, p, inf, opts, name, pr_, ref, refW]() mutable {
+        if (ref->valid) { opts.reference = ref.get(); opts.referenceWeight = refW; }
         opts.progress = [this](int done, int total, const std::string& label) {
             genProgress.store((float)done / (float)total);
             { const juce::ScopedLock sl(labelLock); genLabel = juce::String(label); }
@@ -203,7 +208,7 @@ void SonicDNAProcessor::setKit(std::shared_ptr<Kit> k, const PatternState* keepP
         for (int c = 0; c < kChannels; ++c) { st.ch[(size_t)c].role = roles[(size_t)c]; }
         assignKitToChannels(*kit, st);
         Groove g = pickGroove(kit->profile, kit->seed);
-        sdna::randomizePattern(st, kit->profile, g, kit->seed, 0.5f, kit->influence.variation);
+        sdna::randomizePattern(st, kit->profile, g, kit->seed, 0.5f, kit->influence.variation, &kit->dna.ref);
         st.bpm = kit->dna.bpm; st.swing = kit->dna.swing;
         st.ch[5].choke = st.ch[6].choke = st.ch[7].choke = 1;
     }
@@ -267,7 +272,7 @@ void SonicDNAProcessor::randomizePattern(Groove g, float density) {
     SonicProfile p = kit ? kit->profile : profileWithPrompt();
     uint64_t seed = freshSeed();
     float bpm = st.bpm;
-    sdna::randomizePattern(st, p, g, seed, density, influence.variation);
+    sdna::randomizePattern(st, p, g, seed, density, influence.variation, kit ? &kit->dna.ref : nullptr);
     st.bpm = bpm; // keep user's tempo
     for (int c = 0; c < kChannels; ++c) for (int k = 0; k < kSteps; ++k) machine.steps[c][k].store(st.vel[(size_t)c][(size_t)k]);
     listeners.call([](Listener& l) { l.padsChanged(); });
@@ -355,7 +360,7 @@ void SonicDNAProcessor::loadKitAsync(const juce::File& f) {
         postToMessageThread([this, ok, k, st, f, err] {
             if (!ok) { setStatus("Could not load kit: " + juce::String(err), true); return; }
             kitFile = f;
-            profile = k->profile;
+            profile = k->profile; artistProfile = k->profile;
             query = juce::String(k->profile.query.empty() ? k->profile.displayName : k->profile.query);
             prompt = juce::String(k->prompt);
             influence = k->influence;
@@ -378,6 +383,9 @@ void SonicDNAProcessor::getStateInformation(juce::MemoryBlock& dest) {
     j["influence"] = inf;
     j["pattern"] = patternToJson(machine.getState());
     j["kit_file"] = kitFile.getFullPathName().toStdString();
+    j["artist_profile"] = profileToJson(artistProfile);
+    Json refs = Json::array(); for (auto& r : references) refs.push(featuresToJson(r));
+    j["references"] = refs; j["reference_weight"] = referenceWeight;
     j["master"] = (double)masterParam->load();
     j["swing"] = (double)swingParam->load();
     auto s = j.dump(0);
@@ -390,6 +398,10 @@ void SonicDNAProcessor::setStateInformation(const void* data, int size) {
     if (j.get("format").str() != "sonic-dna-state") return;
     query = juce::String(j.get("query").str()); prompt = juce::String(j.get("prompt").str());
     profile = profileFromJson(j.get("profile"));
+    artistProfile = j.has("artist_profile") ? profileFromJson(j.get("artist_profile")) : profile;
+    references.clear();
+    for (auto& r : j.get("references").items()) references.push_back(featuresFromJson(r));
+    referenceWeight = (float)j.get("reference_weight").num(0.7);
     const Json& inf = j.get("influence");
     influence.drums = (float)inf.get("drums").num(1); influence.tonal = (float)inf.get("tonal").num(1); influence.texture = (float)inf.get("texture").num(1);
     influence.processing = (float)inf.get("processing").num(1); influence.groove = (float)inf.get("groove").num(1); influence.variation = (float)inf.get("variation").num(0.5);
@@ -413,6 +425,58 @@ void SonicDNAProcessor::setStateInformation(const void* data, int size) {
     } else if (f.getFullPathName().isNotEmpty()) {
         setStatus("Saved kit file not found: " + f.getFullPathName(), true);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reference audio
+bool SonicDNAProcessor::isSupportedAudioFile(const juce::File& f) {
+    return f.hasFileExtension("wav;wave;aif;aiff;flac;mp3;ogg;m4a;aac;caf;wma");
+}
+
+void SonicDNAProcessor::rebuildProfile() {
+    auto comb = combineReferences(references);
+    profile = comb.valid ? profileFromReference(comb, &artistProfile, referenceWeight) : artistProfile;
+    listeners.call([](Listener& l) { l.profileChanged(); });
+}
+
+void SonicDNAProcessor::setReferenceWeight(float w) { referenceWeight = juce::jlimit(0.0f, 1.0f, w); rebuildProfile(); }
+void SonicDNAProcessor::removeReference(int i) { if (i >= 0 && i < (int)references.size()) { references.erase(references.begin() + i); rebuildProfile(); } }
+void SonicDNAProcessor::clearReferences() { references.clear(); rebuildProfile(); setStatus("Reference audio cleared."); }
+
+void SonicDNAProcessor::addReferenceFiles(const juce::Array<juce::File>& files) {
+    for (auto& file : files) {
+        if (!isSupportedAudioFile(file)) { setStatus("Not an audio file SONIC DNA can read: " + file.getFileName(), true); continue; }
+        ++refJobs; refProgress = 0;
+        setStatus("Listening to " + file.getFileName() + U8("… (analysed locally, nothing is uploaded)"));
+        pool.addJob([this, file] {
+            ReferenceFeatures f; juce::String err;
+            std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+            if (!reader) err = "unsupported or unreadable file";
+            else if (reader->lengthInSamples < (juce::int64)(reader->sampleRate * 3)) err = "shorter than 3 seconds";
+            else {
+                // Read at most 150 s, skipping intros on long tracks (matches the analyser's window).
+                juce::int64 len = reader->lengthInSamples, start = 0, maxLen = (juce::int64)(150.0 * reader->sampleRate);
+                if (len > maxLen) { start = len * 15 / 100; len = juce::jmin(maxLen, reader->lengthInSamples - start); }
+                int ch = juce::jlimit(1, 2, (int)reader->numChannels);
+                juce::AudioBuffer<float> buf(ch, (int)len);
+                reader->read(&buf, 0, (int)len, start, true, ch > 1);
+                Buffer b(ch, (int)len, reader->sampleRate);
+                for (int c = 0; c < ch; ++c) std::copy(buf.getReadPointer(c), buf.getReadPointer(c) + len, b.ch[(size_t)c].begin());
+                f = analyseReference(b, file.getFileName().toStdString(), [this](float p) { refProgress = p; return true; });
+                f.seconds = (double)reader->lengthInSamples / reader->sampleRate;
+                if (!f.valid) err = "could not find enough musical content";
+            }
+            postToMessageThread([this, f, err, file] {
+                --refJobs;
+                if (err.isNotEmpty()) { setStatus("Could not analyse " + file.getFileName() + ": " + err, true); return; }
+                references.push_back(f);
+                rebuildProfile();
+                auto facts = describeReference(f);
+                setStatus("Analysed " + file.getFileName() + U8(" — ") + juce::String(facts.empty() ? "" : facts[0]) + ". Press GENERATE to build a kit from it.");
+            });
+        });
+    }
+    listeners.call([](Listener& l) { l.statusChanged(); });
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SonicDNAProcessor(); }

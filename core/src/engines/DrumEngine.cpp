@@ -38,6 +38,14 @@ GenResult kick(const GenContext& c, Rng& r, int forced = -1) {
     size_t rec = forced >= 0 ? (size_t)forced : pickRecipe(c, r, w);
     double f0 = midiToHz(c.dna.kickNote + c.dna.drumTune * 0.3 + r.bipolar() * c.variation * 1.5);
     double fPunch = f0 < 45 ? f0 * 1.5 : f0;
+    const auto& ref = c.dna.ref;
+    // Reference audio: tune kicks to the measured kick and follow its decay / sweep.
+    auto refT60 = [&](double def) { return (ref.valid && ref.kickDecay > 0) ? def + (ref.kickDecay * r.range(0.85, 1.15) - def) * ref.weight : def; };
+    if (ref.valid && ref.kickHz > 25.0f) {
+        double target = ref.kickHz * std::pow(2.0, r.gauss() * c.variation * 1.2 / 12.0);
+        f0 = f0 + (target - f0) * ref.weight;
+        fPunch = f0;
+    }
     GenResult g; g.recipe = names[rec];
     Buffer b;
     auto punch = [&](double t60) {
@@ -49,13 +57,14 @@ GenResult kick(const GenContext& c, Rng& r, int forced = -1) {
     switch (rec) {
         case 0: {
             PitchedDrum pd; pd.f0 = f0; pd.startMul = r.range(3.0, 5.0); pd.pitchDecay = r.range(0.025, 0.05);
-            pd.ampT60 = 0.6 + d.heavy * 1.3 * r.range(0.7, 1.1); pd.length = pd.ampT60 * 0.85 + 0.15;
+            pd.ampT60 = refT60(0.6 + d.heavy * 1.3 * r.range(0.7, 1.1)); pd.length = pd.ampT60 * 0.85 + 0.15;
+            if (ref.valid && ref.kickDrop > 1.2f) pd.startMul = clampd(ref.kickDrop * 1.3, 1.5, 8.0);
             pd.clickAmt = 0.12 + d.aggr * 0.3; pd.clickLP = brightLP(d, 4500);
             b = pitchedDrum(sr, pd, r.next());
             fx::saturate(b, SatType::Soft, d.dist * 0.5f);
             break;
         }
-        case 1: b = punch(r.range(0.25, 0.45)); fx::transient(b, 3.0f + d.aggr * 3.0f, 0.0f); break;
+        case 1: b = punch(refT60(r.range(0.25, 0.45))); fx::transient(b, 3.0f + d.aggr * 3.0f, 0.0f); break;
         case 2: {
             PitchedDrum pd; pd.f0 = f0 * 2; pd.startMul = r.range(4.0, 7.0); pd.pitchDecay = r.range(0.015, 0.03);
             pd.ampT60 = r.range(0.45, 0.9); pd.length = pd.ampT60 + 0.05; pd.clickAmt = 0.5;
@@ -87,7 +96,7 @@ GenResult kick(const GenContext& c, Rng& r, int forced = -1) {
             break;
         }
         case 5: {
-            b = punch(r.range(0.2, 0.35));
+            b = punch(refT60(r.range(0.2, 0.35)));
             fx::saturate(b, SatType::Tube, 0.4f + d.dist * 0.3f);
             fx::lowpass(b, r.range(2200, 4500), 0.8);
             fx::bitcrush(b, r.irange(9, 12), r.irange(1, 3), 0.7f);
@@ -151,19 +160,23 @@ GenResult snare(const GenContext& c, Rng& r, int forced = -1) {
     static const char* names[] = { "Crack", "Snap", "Dusty", "Metal", "Gated", "Brush", "Plastic", "Breakbeat" };
     size_t rec = forced >= 0 ? (size_t)forced : pickRecipe(c, r, w);
     double tune = std::pow(2.0, c.dna.drumTune / 12.0);
+    const auto& ref = c.dna.ref;
+    bool follow = ref.valid && ref.snareDecay > 0;
+    auto body = [&](double def) { return (follow && ref.snareHz > 100) ? def + (ref.snareHz * r.range(0.95, 1.05) - def) * ref.weight : def; };
+    auto ndec = [&](double def) { return follow ? def + (ref.snareDecay * r.range(0.85, 1.15) - def) * ref.weight : def; };
     GenResult g; g.recipe = names[rec];
     Buffer b;
     switch (rec) {
-        case 0: b = crackSnare(c, r, d, r.range(170, 230) * tune, r.range(0.15, 0.3)); break;
+        case 0: b = crackSnare(c, r, d, body(r.range(170, 230) * tune), ndec(r.range(0.15, 0.3))); break;
         case 1: {
-            b = crackSnare(c, r, d, r.range(200, 250) * tune, r.range(0.09, 0.14));
+            b = crackSnare(c, r, d, body(r.range(200, 250) * tune), ndec(r.range(0.09, 0.14)));
             Buffer cl = clapBursts(sr, 2, 8, 0.08, 1500, 1.0, r.next(), 0.3);
             fx::mixInto(b, cl, 0, 0.45f);
             fx::transient(b, 4, -1);
             break;
         }
         case 2:
-            b = crackSnare(c, r, d, r.range(160, 210) * tune, r.range(0.12, 0.22));
+            b = crackSnare(c, r, d, body(r.range(160, 210) * tune), ndec(r.range(0.12, 0.22)));
             fx::saturate(b, SatType::Tube, 0.5f);
             fx::lowpass(b, r.range(3500, 6000), 0.8);
             fx::bitcrush(b, r.irange(8, 11), r.irange(1, 3), 0.7f);
@@ -201,7 +214,7 @@ GenResult snare(const GenContext& c, Rng& r, int forced = -1) {
             break;
         }
         default:
-            b = crackSnare(c, r, d, r.range(180, 220) * tune, r.range(0.18, 0.28));
+            b = crackSnare(c, r, d, body(r.range(180, 220) * tune), ndec(r.range(0.18, 0.28)));
             fx::compress(b, -22, 8, 1, 60, 10);
             fx::saturate(b, SatType::Soft, 0.5f);
             fx::reverb(b, 0.35f, 0.5f, 0.12f, 0.8f, 3, 0.3);
@@ -209,6 +222,7 @@ GenResult snare(const GenContext& c, Rng& r, int forced = -1) {
             break;
     }
     fx::highpass(b, 90);
+    if (follow && ref.snareBright > 500) fx::lowpass(b, std::min(16000.0, (double)ref.snareBright * (3.5 - 1.5 * ref.weight)), 0.6);
     g.audio = std::move(b);
     return g;
 }

@@ -19,7 +19,7 @@ public:
         double sr = c.sampleRate;
         float dark = pv(c, r, Desc::Dark), elec = pv(c, r, Desc::Electronic), lofi = pv(c, r, Desc::Lofi), ind = pv(c, r, Desc::Industrial);
         float dist = pv(c, r, Desc::Distorted), vin = pv(c, r, Desc::Vintage), hyp = pv(c, r, Desc::Hyper), aggr = pv(c, r, Desc::Aggressive), exp_ = pv(c, r, Desc::Experimental);
-        double brightMul = std::pow(2.0, (0.45 - dark) * 1.2);
+        double brightMul = std::pow(2.0, (0.45 - dark) * 1.2); // may follow reference hats below
         GenResult g;
 
         if (cat == Category::Shaker) {
@@ -55,6 +55,13 @@ public:
             default: t60 = r.range(1.6, 3.5); length = t60 * 0.9; hp = 2500; bpHz = 7000; break; // crash
         }
         if (rec == 5) { t60 *= 0.4; length = std::max(0.08, length * 0.5); }
+        const auto& ref = c.dna.ref;
+        if (ref.valid && ref.hatDecay > 0 && (cat == Category::ClosedHat || cat == Category::PedalHat)) {
+            double target = ref.hatDecay * (cat == Category::PedalHat ? 1.8 : 1.0) * r.range(0.8, 1.2);
+            t60 = t60 + (target - t60) * ref.weight;
+            length = std::max(length, t60 + 0.08);
+        }
+        if (ref.valid && ref.hatBright > 2000) brightMul = brightMul + (ref.hatBright / 9000.0 - brightMul) * ref.weight;
         double tune = r.range(0.85, 1.6) * std::pow(2.0, c.dna.drumTune / 24.0);
         Buffer metal, noise;
         int len = (int)(length * sr);

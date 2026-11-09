@@ -247,6 +247,14 @@ static Json dnaToJson(const KitDNA& d) {
     j["tape_wow"] = d.tapeWow; j["noise_floor_db"] = d.noiseFloorDb; j["vinyl"] = d.vinyl; j["tone"] = d.tone;
     j["drum_tune"] = d.drumTune; j["transient_db"] = d.transientDb; j["fm_bias"] = d.fmBias; j["kick_note"] = d.kickNote;
     Json pr = Json::array(); for (int x : d.progression) pr.push(x); j["progression"] = pr;
+    if (d.ref.valid) {
+        Json r = Json::object();
+        r["weight"] = d.ref.weight; r["kick_hz"] = d.ref.kickHz; r["kick_decay"] = d.ref.kickDecay; r["kick_drop"] = d.ref.kickDrop;
+        r["snare_hz"] = d.ref.snareHz; r["snare_decay"] = d.ref.snareDecay; r["snare_bright"] = d.ref.snareBright;
+        r["hat_decay"] = d.ref.hatDecay; r["hat_bright"] = d.ref.hatBright; r["bandwidth_hz"] = d.ref.bandwidthHz;
+        if (d.ref.hasGrid) { Json g = Json::array(); for (auto& row : d.ref.grid) { Json rr = Json::array(); for (float v : row) rr.push(std::round(v * 1000) / 1000.0); g.push(rr); } r["grid"] = g; }
+        j["reference_targets"] = r;
+    }
     return j;
 }
 static KitDNA dnaFromJson(const Json& j) {
@@ -264,6 +272,14 @@ static KitDNA dnaFromJson(const Json& j) {
     d.kickNote = (int)j.get("kick_note").num(33);
     d.progression.clear(); for (auto& x : j.get("progression").items()) d.progression.push_back((int)x.num(0));
     if (d.progression.empty()) d.progression = { 0, 5, 2, 6 };
+    if (j.has("reference_targets")) {
+        const Json& r = j.get("reference_targets");
+        d.ref.valid = true; d.ref.weight = (float)r.get("weight").num(0.7);
+        d.ref.kickHz = (float)r.get("kick_hz").num(0); d.ref.kickDecay = (float)r.get("kick_decay").num(0); d.ref.kickDrop = (float)r.get("kick_drop").num(0);
+        d.ref.snareHz = (float)r.get("snare_hz").num(0); d.ref.snareDecay = (float)r.get("snare_decay").num(0); d.ref.snareBright = (float)r.get("snare_bright").num(0);
+        d.ref.hatDecay = (float)r.get("hat_decay").num(0); d.ref.hatBright = (float)r.get("hat_bright").num(0); d.ref.bandwidthHz = (float)r.get("bandwidth_hz").num(0);
+        if (r.get("grid").size() == 3) { d.ref.hasGrid = true; for (int b = 0; b < 3; ++b) for (int s = 0; s < 16; ++s) d.ref.grid[(size_t)b][(size_t)s] = (float)r.get("grid")[(size_t)b][(size_t)s].num(0); }
+    }
     return d;
 }
 

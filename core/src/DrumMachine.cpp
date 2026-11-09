@@ -426,9 +426,19 @@ std::array<Grid, R_COUNT> templ(Groove gr) {
 }
 }
 
-void randomizePattern(PatternState& st, const SonicProfile& p, Groove gr, uint64_t seed, float density, float humanize) {
+void randomizePattern(PatternState& st, const SonicProfile& p, Groove gr, uint64_t seed, float density, float humanize, const ReferenceTargets* ref) {
     Rng r(seed);
     auto t = templ(gr);
+    bool fromRef = ref && ref->valid && ref->hasGrid;
+    if (fromRef) {
+        // The measured groove leads; the style template only fills in gaps.
+        const Role roles[3] = { R_KICK, R_SNARE, R_HATC };
+        for (int b = 0; b < 3; ++b) for (int s = 0; s < 16; ++s) {
+            float m = ref->grid[(size_t)b][(size_t)s];
+            float w = 0.85f * std::max(0.5f, ref->weight);
+            t[roles[b]][(size_t)s] = m >= 0.75f ? 1.0f : w * m + (1 - w) * t[roles[b]][(size_t)s];
+        }
+    }
     float energy = p[Desc::Energy];
     float dens = clampf(0.55f + density * 0.6f + (energy - 0.5f) * 0.3f, 0.2f, 1.3f);
     bool seenRole[R_COUNT] = {};
@@ -440,8 +450,12 @@ void randomizePattern(PatternState& st, const SonicProfile& p, Groove gr, uint64
             float prob = t[role][(size_t)s];
             if (second) prob *= (role == R_KICK || role == R_SNARE) ? 0.25f : 0.45f; // a second pad of the same role is sparser
             if (role != R_KICK || s != 0) prob = clampf(prob * dens, 0, 1);
-            if (role == R_KICK && s == 0 && !second) prob = 1.0f;
+            if (role == R_KICK && s == 0 && !second && (!fromRef || ref->grid[0][0] > 0.3f)) prob = 1.0f;
             bool on = prob >= 0.999f || r.chance(prob);
+            if (fromRef && !second && (role == R_KICK || role == R_SNARE || role == R_HATC)) {
+                int band = role == R_KICK ? 0 : role == R_SNARE ? 1 : 2;
+                if (ref->grid[(size_t)band][(size_t)s] >= 0.75f) on = true; // the reference plays it every bar
+            }
             if (!on) { st.vel[(size_t)c][(size_t)s] = 0; continue; }
             float base = (s % 4 == 0) ? 112.0f : (s % 2 == 0) ? 92.0f : 74.0f;
             if (prob < 0.4f) base -= 18.0f; // ghost-ish

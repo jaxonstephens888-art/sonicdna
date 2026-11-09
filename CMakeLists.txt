@@ -22,6 +22,7 @@ add_library(sdna_core STATIC
   core/src/Json.cpp
   core/src/KitIO.cpp
   core/src/OnlineAnalysis.cpp
+  core/src/AudioAnalysis.cpp
   core/src/engines/Synth.cpp
   core/src/engines/DrumEngine.cpp
   core/src/engines/CymbalEngine.cpp
