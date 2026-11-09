@@ -48,12 +48,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
+          set -x
+          shopt -s nullglob
           mkdir -p dist
-          cp -R build/plugin/SonicDNA_artefacts/Release/Standalone/* dist/
-          cp -R build/plugin/SonicDNA_artefacts/Release/VST3/* dist/
-          if [ -d build/plugin/SonicDNA_artefacts/Release/AU ]; then cp -R build/plugin/SonicDNA_artefacts/Release/AU/* dist/; fi
-          if [ -f build/Release/sonicdna.exe ]; then cp build/Release/sonicdna.exe dist/; else cp build/sonicdna dist/; fi
+          ART=build/plugin/SonicDNA_artefacts/Release
+          ls -la "$ART" "$ART"/* || true
+          for d in Standalone VST3 AU; do
+            if [ -d "$ART/$d" ]; then cp -R "$ART/$d/." dist/; fi
+          done
+          for cli in build/Release/sonicdna.exe build/sonicdna.exe build/sonicdna; do
+            if [ -f "$cli" ]; then cp "$cli" dist/; break; fi
+          done
+          rm -f dist/*.pdb dist/*.lib dist/*.exp
           cp README.md dist/
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
